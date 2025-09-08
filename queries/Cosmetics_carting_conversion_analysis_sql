@@ -1,0 +1,402 @@
+CREATE DATABASE Cosmetics_Events_History;
+USE cosmetics_events_history;
+
+-- ==========================================================
+-- Creating the 5 temporary tables
+-- ==========================================================
+create table temp_feb_2020 (
+    event_time timestamp,
+    event_type varchar(255),
+    product_id bigint,
+    category_id bigint,
+    category_code varchar(255),
+    brand varchar(255),
+    price decimal(12,2),
+    user_id bigint,
+    user_session varchar(255));
+
+/* no index to allow for faster loading
+*/
+
+-- ==========================================================
+-- Loading data into the five temporary tables
+-- ==========================================================
+LOAD DATA INFILE 'C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/2020-feb.csv'
+INTO TABLE temp_feb_2020
+FIELDS TERMINATED BY ','
+ENCLOSED BY '""'
+LINES TERMINATED BY '\n'
+IGNORE 1 ROWS
+(
+    @event_time_var,
+    event_type,
+    product_id,
+    category_id,
+    category_code,
+    brand,
+    price,
+    user_id,
+    session_id
+)
+SET
+    event_time = STR_TO_DATE(@event_time_var, '%Y-%m-%d %H:%i:%s');
+
+-- ==========================================================
+-- Dropping incomplete column
+-- ==========================================================
+alter table temp_feb_2020 drop column category_code;
+
+/*
+the column contains only 1 percent of values and there is no way to 
+establish a valid connection between it and other columns.
+*/
+
+-- ==========================================================
+-- Renaming event_type values for clarity
+-- ==========================================================
+update temp_feb_2020
+set event_type = 'Cart' where event_type = 'cart';
+update temp_feb_2020
+set event_type = 'Removed' where event_type = 'remove_from_cart';
+update temp_feb_2020
+set event_type = 'Purchased' where event_type = 'purchase';
+update temp_feb_2020
+set event_type = 'Viewed' where event_type = 'view';
+
+-- 
+select event_type, count(event_type) from temp_jan_2020 group by event_type;
+
+/* This value was compared to the total rows in the table to check for completeness
+
+-- ==========================================================
+-- handling empty records
+-- ==========================================================
+update temp_feb_2020
+set event_type = 'unknown' where event_type = '';
+update temp_feb_2020
+set product_id = null where product_id = '';
+update temp_feb_2020
+set category_id = null where category_id = '';
+update temp_feb_2020
+set Brand = 'No Brand' where Brand = '';
+update temp_feb_2020
+set price = 0.00 where price = 0;
+update temp_feb_2020
+set user_id = null where user_id = '';
+update temp_feb_2020
+set user_session = 'unknown' where user_session = '';
+
+-- ==========================================================
+-- handling nulls
+-- ==========================================================
+update temp_feb_2020
+set event_time = 'unknown' where event_time is null;
+update temp_feb_2020
+set event_type = 'unknown' where event_type is null;
+update temp_feb_2020
+set product_id = null where product_id is null;
+update temp_feb_2020
+set category_id = null where category_id is null;
+update temp_feb_2020
+set Brand = 'No Brand' where brand is null;
+update temp_feb_2020
+set price = 0.00 where price is null;
+update temp_feb_2020
+set user_id = null where user_id is null;
+update temp_feb_2020
+set user_session = 'unknown' where user_session is null;
+
+-- ==========================================================
+-- creating the backup table
+-- ==========================================================
+CREATE TABLE `backup_events_history` (
+  `Event_id` bigint NOT NULL PRIMARY KEY AUTO_INCREMENT,
+  `Event_time` datetime NOT NULL,
+  `Event_type` enum('viewed','cart','removed','purchased') DEFAULT NULL,
+  `Category_id` bigint DEFAULT NULL,
+  `Brand` varchar(13) DEFAULT NULL,
+  `Price` decimal(12,2) DEFAULT NULL,
+  `User_id` bigint NOT NULL,
+  `User_session` varchar(36) DEFAULT NULL,
+  product_id bigint,
+CONSTRAINT unique_event UNIQUE (Event_time, Event_type, User_id, Product_id, User_session)
+) ENGINE=InnoDB AUTO_INCREMENT=1;
+
+-- ==========================================================
+-- populating the backup table using the five temp tables
+-- ==========================================================
+INSERT IGNORE INTO backup_events_history (
+	Event_time, Event_type, Category_id, Brand, Product_id, Price, User_id, User_session)
+SELECT DISTINCT
+  Event_time, Event_type, Category_id, Brand, product_id, Price, User_id, User_session
+FROM temp_feb_2020;
+
+-- ==========================================================
+-- adding primar key and indexes
+-- ==========================================================
+alter table backup_events_history,
+  add primary key (event_id)
+  add index `Event_type_idx` (`Event_type`),
+  add index `Brand_idx` (`Brand`),
+  add index `session_idx` (`User_session`),
+  add index `funnel_idx` (`Event_time`,`User_session`),
+  add index `category_idx` (`Category_id`),
+  add index `product_idx` (product_id);
+
+-- ==========================================================
+-- Creating the events_history table
+-- ==========================================================
+CREATE TABLE events_history AS SELECT event_id,
+  event_time,
+  event_type,
+  user_id,
+  session_id,
+  product_id FROM
+  backup_events_history;
+
+-- ==========================================================
+-- Adding indexes to the events_history table
+-- ==========================================================
+alter table events_history
+	add index event_type_idx (event_type),
+  add index user_idx (user_id),
+  add index session_idx (session_id),
+  add index product_idx (product_id);
+
+-- ==========================================================
+-- separating records with price as zero or a negative value.
+-- ==========================================================
+/*
+some records had negative or zero prices.
+These were all products with specified prices
+*/
+
+-- ==========================================================
+-- creating the price anomalies table
+-- ==========================================================
+CREATE TABLE Anomalies_price (
+  `Event_id` bigint NOT NULL AUTO_INCREMENT,
+  `Event_time` datetime NOT NULL,
+  `Event_type` enum('viewed','cart','removed','purchased') DEFAULT NULL,
+  `Category_id` bigint DEFAULT NULL,
+  `Brand` varchar(13) DEFAULT NULL,
+  `Price` decimal(12,2) DEFAULT NULL,
+  `User_id` bigint NOT NULL,
+  `User_session` varchar(36) DEFAULT NULL,
+  `product_id` bigint,
+  PRIMARY KEY (`Event_id`),
+  CONSTRAINT unique_event UNIQUE (Event_time, Event_type, User_id, Product_id, User_session)
+) ENGINE=InnoDB AUTO_INCREMENT=1;
+
+INSERT IGNORE INTO Anomalies_price (
+	Event_time, Event_type, Category_id, Brand, Product_id, Price, User_id, session_id)
+SELECT
+    Event_time, Event_type, Category_id, Brand, product_id, Price, User_id, session_id
+FROM  backup_events_history where price <= 0;
+
+/*
+86450 records
+*/
+
+-- ==========================================================
+-- Creating the session history table
+-- ==========================================================
+CREATE TABLE `session_history` (
+    `Session_id` varchar(36) NOT NULL,
+    `user_id` bigint NOT NULL,
+    `session_start` datetime NULL,
+    `session_end` datetime NULL,
+    `duration` bigint NULL,
+    `weekday` int NULL,
+    `month` int NULL,
+    `session_hour` int NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- using a temporary table to host the required columns
+CREATE TABLE `temp_session_history` (
+    `event_time` timestamp,
+    `Session_id` varchar(36) NOT NULL,
+    `user_id` bigint NOT NULL
+) ENGINE=InnoDB;
+
+-- Populating the temporary session table
+insert into temp_session_history (
+	session_id,
+    user_id,
+    event_time)
+select
+	session_id,
+    user_id,
+    event_time
+from events_history;
+
+-- populating the session history table
+insert into session_history (
+	session_id,
+    user_id,
+    session_start,
+    session_end
+)
+select
+	session_id,
+    user_id,
+    min(event_time),
+    max(event_time)
+from temp_session_history
+group by 1,2;
+
+ALTER TABLE session_history
+  ADD COLUMN duration BIGINT NULL,
+  ADD COLUMN weekday INT NULL,
+  ADD COLUMN month INT NULL,
+  ADD COLUMN session_hour INT NULL,
+  ADD COLUMN week INT NULL;
+
+start transaction;
+
+update session_history
+set
+	duration = TIMESTAMPDIFF(MINUTE, session_start, session_end),
+  weekday = weekday(session_start),
+	month = month(session_start),
+  session_hour = hour(session_start),
+  week = week(session_start);
+
+commit;
+
+-- adding indexes
+alter table session_history
+	add index session_idx (session_id),
+    add index user_idx (user_id),
+    add index time_idx (session_hour),
+    add index weekday_idx (weekday),
+    add index month_idx (month),
+    add index week_idx (week);
+
+show create table session_history;
+
+drop table temp_session_history;
+
+-- ==========================================================
+-- Handling records with multiple users with the same session_id
+-- ==========================================================
+-- Creating a temporary table to host the user_ids
+CREATE TEMPORARY TABLE anomalous_sessions AS
+SELECT session_id
+FROM session_history
+GROUP BY session_id
+HAVING COUNT(DISTINCT user_id) > 1;
+
+/*
+Records with unknown sessions were also included, because
+they will aggregate into on very large session which might skewer analysis
+*/
+
+-- Creating the anomalies_multiuser_session table
+CREATE TABLE session_anomalies AS
+SELECT *
+FROM backup_events_history
+WHERE Session_id IN (SELECT session_id FROM anomalous_sessions);
+
+-- delete the records from the events_history table
+DELETE FROM events_history
+WHERE session_id IN (SELECT session_id FROM anomalous_sessions);
+
+-- delete the records from the session_history table
+DELETE FROM session_history
+WHERE session_id IN (SELECT session_id FROM anomalous_sessions);
+
+-- Dropping temporary table anomalous_sessions
+DROP TEMPORARY TABLE anomalous_sessions;
+
+-- ==========================================================
+-- Handling session length anomalies
+-- ==========================================================
+create table session_length_anomalies as 
+select * from session_history where duration > 1440; -- 24 hours
+
+-- creating the anomalies_session_length table
+create table Anomalies_session_length as
+select * from backup_events_history
+where session_id in (select session_id from session_length_anomalies);
+
+drop table session_length_anomalies;
+
+-- deleting from the session history table
+delete from session_history
+where session_id in (select session_id from anomalies_session_length);
+
+-- deleting from the events_history table
+delete from events_history
+where session_id in (select session_id from anomalies_session_length);
+
+-- ==========================================================
+-- Session summary table
+-- ==========================================================
+CREATE TABLE `session_summary` (
+  `session_id` varchar(36) DEFAULT NULL,
+  `viewed` int DEFAULT NULL,
+  `carted` int DEFAULT NULL,
+  `purchased` int DEFAULT NULL,
+  `removed` int DEFAULT NULL
+) ENGINE=InnoDB;
+
+-- Populating
+INSERT ignore INTO session_summary (session_id, viewed, carted, purchased, removed)
+SELECT 
+    Session_id AS Session_id, user_id as User_id,
+    SUM(case when event_type = 'viewed' then 1 else 0 end)    AS viewed,
+    SUM( case when event_type = 'cart' then 1 else 0 end)      AS carted,
+    SUM(case when event_type = 'purchased' then 1 else 0 end) AS purchased,
+    SUM(case when event_type = 'removed' then 1 else 0 end)   AS removed
+FROM backup_events_history
+GROUP BY user_session order by User_session asc limit 500000;
+
+-- adding session id index
+alter table session_summary
+add index session_idx (session_id),
+add index user_idx (user_id);
+
+show create table session_summary;
+
+-- ----------------------------------------------------------------------------------------------------------------------------------
+-- Creating the products table
+-- ----------------------------------------------------------------------------------------------------------------------------------
+create table temp_products (
+	product_id bigint,
+    price decimal(12,2),
+    category_id bigint,
+    brand varchar(13)
+    );
+    
+insert into products (product_id, price, category_id, brand)
+select product_id, price, category_id, brand
+from events_history
+;
+
+create table products as
+select distinct product_id, category_id, price, brand from temp_products;
+
+alter table products
+add column Percentage_price_diff int;
+
+UPDATE products AS p
+JOIN (
+    SELECT
+        product_id,
+        MIN(price) AS min_price,
+        MAX(price) AS max_price
+    FROM
+        products
+    GROUP BY
+        product_id
+) AS prices ON p.product_id = prices.product_id
+SET
+    p.percentage_Price_diff = (
+        (prices.max_price - prices.min_price) / prices.min_price
+    ) * 100;
+
+select * from products order by percentage_price_diff desc, product_id, price;
+drop table temp_products;
+
+-- dropping the price, brand, and category_id columns after creating the products table
