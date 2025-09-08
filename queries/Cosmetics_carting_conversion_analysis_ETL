@@ -9,16 +9,16 @@ USE cosmetics_events_history;
 -- since source file is large and field lengths were uncertain.
 -- Will refine to exact limits in structured tables later.
 
-create table temp_feb_2020 (
-    event_time datetime,
-    event_type varchar(255),
-    product_id bigint,
-    category_id bigint,
-    category_code varchar(255),
-    brand varchar(255),
-    price decimal(12,2),
-    user_id bigint,
-    session_id varchar(255));
+CREATE TABLE temp_feb_2020 (
+    event_time DATETIME,
+    event_type VARCHAR(255),
+    product_id BIGINT,
+    category_id BIGINT,
+    category_code VARCHAR(255),
+    brand VARCHAR(255),
+    price DECIMAL(12,2),
+    user_id BIGINT,
+    session_id VARCHAR(255));
 
 -- no index to allow for faster loading
 
@@ -59,8 +59,8 @@ events started at exactly 12 am, STR_TO_DATE was used to handle 0000-00-00 00:00
 -- Dropped column after inspection: <1% populated, no reliable relationship
 -- to product_id or category_id. Retaining would add noise without value.
 
-alter table temp_feb_2020
-drop column category_code;
+ALTER TABLE temp_feb_2020
+DROP COLUMN category_code;
 
 -- ==========================================================
 -- Renaming event_type values for clarity
@@ -70,12 +70,12 @@ drop column category_code;
 -- Converted to standardized labels: 'viewed', 'removed', 'purchased'
 -- Ensures consistency with ENUM definition in final structured table.
 -- The 'cart' events type was left as is.
-update temp_feb_2020
-set event_type = 'removed' where event_type = 'remove_from_cart';
-update temp_feb_2020
-set event_type = 'purchased' where event_type = 'purchase';
-update temp_feb_2020
-set event_type = 'viewed' where event_type = 'view';
+UPDATE temp_feb_2020
+SET event_type = 'removed' WHERE event_type = 'remove_from_cart';
+UPDATE temp_feb_2020
+SET event_type = 'purchased' WHERE event_type = 'purchase';
+UPDATE temp_feb_2020
+SET event_type = 'viewed' WHERE event_type = 'view';
 
 select event_type, count(event_type) from temp_feb_2020 group by event_type;
 -- This value was compared to the total rows in the table
@@ -369,8 +369,9 @@ LIMIT 500000;
 -- ==========================================================
 -- Creating the products table
 -- ==========================================================
--- Stores descriptive attributes for each product.
--- The events_history table references this table via product_id.
+-- Stores descriptive attributes for each product and preserves all observed prices.
+-- Each row represents a unique combination of product_id, price, category, and brand.
+-- This is intentional because all price points are important for downstream analysis
 
 -- Creating a temporary table to hold all product info
 CREATE TABLE temp_products AS
@@ -382,26 +383,20 @@ CREATE TABLE products AS
 SELECT DISTINCT product_id, category_id, price, brand
 FROM temp_products;
 
--- Adding a calculated column for price variation
-ALTER TABLE products
-ADD COLUMN percentage_price_diff INT;
-
--- Calculating the percentage price difference for each product
-UPDATE products AS p
-JOIN (
-    SELECT
-        product_id,
-        MIN(price) AS min_price,
-        MAX(price) AS max_price
-    FROM
-        products
-    GROUP BY
-        product_id
-) AS prices ON p.product_id = prices.product_id
-SET
-    p.percentage_price_diff = (
-        (prices.max_price - prices.min_price) / prices.min_price
-    ) * 100;
+-- ==========================================================
+-- Creating a table with the price variations for each product
+-- ==========================================================
+-- Captures min, max, and percentage variation per product_id
+CREATE TABLE product_price_variations AS
+SELECT
+    product_id,
+    MIN(price) AS min_price,
+    MAX(price) AS max_price,
+    ROUND((MAX(price) - MIN(price)) / MIN(price) * 100, 2) AS price_variation
+FROM
+    products
+GROUP BY
+    product_id;
 
 -- Drop the temporary table
 DROP TABLE temp_products;
