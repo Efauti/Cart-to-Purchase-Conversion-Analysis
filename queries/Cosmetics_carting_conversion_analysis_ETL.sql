@@ -328,10 +328,6 @@ SELECT *
 FROM backup_events_history
 WHERE Session_id IN (SELECT Session_id FROM session_length_anomalies);
 
--- deleting from the session history table
-delete from session_history
-where session_id in (select session_id from session_length_anomalies);
-
 -- Remove these anomalous sessions from working tables 
 DELETE FROM session_history
 WHERE Session_id IN (SELECT Session_id FROM session_length_anomalies);
