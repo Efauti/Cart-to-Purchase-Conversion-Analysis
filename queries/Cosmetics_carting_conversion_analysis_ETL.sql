@@ -56,8 +56,9 @@ events started at exactly 12 am, STR_TO_DATE was used to handle 0000-00-00 00:00
 -- ==========================================================
 -- Dropping incomplete column
 -- ==========================================================
--- Dropped column after inspection: <1% populated, no reliable relationship
--- to product_id or category_id. Retaining would add noise without value.
+-- Dropped column from all five temporary tables after inspection:
+-- <1% populated, no reliable relationship to product_id or 
+-- category_id. Retaining would add noise without value.
 
 ALTER TABLE temp_feb_2020
 DROP COLUMN category_code;
@@ -237,19 +238,19 @@ CREATE TABLE session_history (
   Week INT NULL
 ) ENGINE=InnoDB;
 
--- Temporary table for computing session start and end
+-- Creating a temporary table for computing session start and end
 CREATE TEMPORARY TABLE temp_session_history (
 Event_time DATETIME,
 Session_id VARCHAR(36) NOT NULL,
 User_id BIGINT NOT NULL
 ) ENGINE=InnoDB;
 
--- Populate temporary session table from events_history
+-- Populating temporary session table from events_history
 INSERT INTO temp_session_history (Session_id, User_id, Event_time)
 SELECT Session_id, User_id, Event_time
 FROM events_history;
 
--- Populate session_history with aggregated session data
+-- Populating session_history with aggregated session data
 INSERT INTO session_history (Session_id, User_id, Session_start, Session_end)
 SELECT
 Session_id,
@@ -259,7 +260,7 @@ MAX(Event_time)
 FROM temp_session_history
 GROUP BY Session_id, User_id;
 
--- Compute additional session metrics
+-- Computing additional session metrics
 START TRANSACTION;
 
 UPDATE session_history
@@ -271,7 +272,7 @@ SET
   Week = WEEK(Session_start);
 COMMIT;
 
--- Add indexes for efficient filtering
+-- Adding indexes for efficient filtering
 ALTER TABLE session_history
   ADD INDEX idx_session_id (Session_id),
   ADD INDEX idx_user_id (User_id),
@@ -286,7 +287,7 @@ DROP TEMPORARY TABLE temp_session_history;
 -- ==========================================================
 -- Handling anomalous sessions (multiple users sharing same session_id)  
 -- ==========================================================  
--- Identify session_ids associated with more than one distinct user
+-- Identifying session_ids associated with more than one distinct user
 CREATE TEMPORARY TABLE anomalous_sessions AS
 SELECT session_id
 FROM session_history
@@ -297,13 +298,13 @@ HAVING COUNT(DISTINCT user_id) > 1;
 -- they will aggregate into one very large session which 
 -- might bias analysis.
 
--- Create a table to store these anomalous session events  
+-- Creating a table to store these anomalous session events  
 CREATE TABLE session_anomalies AS
 SELECT *
 FROM backup_events_history
 WHERE Session_id IN (SELECT session_id FROM anomalous_sessions);
 
--- Remove anomalous sessions from working tables  
+-- Removing anomalous sessions from working tables  
 DELETE FROM events_history
 WHERE session_id IN (SELECT session_id FROM anomalous_sessions);
 
@@ -316,19 +317,19 @@ DROP TEMPORARY TABLE anomalous_sessions;
 -- ==========================================================
 -- Handling session length anomalies
 -- ==========================================================
--- Identify sessions longer than 24 hours (1440 minutes)  
+-- Identified sessions longer than 24 hours (1440 minutes)  
 CREATE TEMPORARY TABLE session_length_anomalies AS
 SELECT *
 FROM session_history
 WHERE duration > 1440;
 
--- Create a table to store these anomalous session events  
+-- Creating a table to store these anomalous session events  
 CREATE TABLE Anomalies_session_length AS
 SELECT *
 FROM backup_events_history
 WHERE Session_id IN (SELECT Session_id FROM session_length_anomalies);
 
--- Remove these anomalous sessions from working tables 
+-- Removing these anomalous sessions from working tables 
 DELETE FROM session_history
 WHERE Session_id IN (SELECT Session_id FROM session_length_anomalies);
 
@@ -348,7 +349,7 @@ CREATE TABLE session_summary (
 
 -- Populating the session_summary table
 -- Data inserted in batches for performance.
--- Subsequent batches can continue from the last session_id inserted.
+-- Subsequent batches continue from the last session_id inserted.
 INSERT IGNORE INTO session_summary (session_id, viewed, carted, purchased, removed)
 SELECT 
     session_id,
@@ -383,6 +384,7 @@ FROM temp_products;
 -- Creating a table with the price variations for each product
 -- ==========================================================
 -- Captures min, max, and percentage variation per product_id
+-- All zero prices has been removed in an earlier step.
 CREATE TABLE product_price_variations AS
 SELECT
     product_id,
