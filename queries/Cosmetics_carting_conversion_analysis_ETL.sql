@@ -2,12 +2,14 @@ CREATE DATABASE cosmetics_events_history;
 USE cosmetics_events_history;
 
 -- ==========================================================
--- Creating the 5 temporary tables
+-- Creating staging tables
 -- ==========================================================
+-- The data was divided into 5 tables for each month from october
+-- 2019 to february 2020.
 -- Staging table used for raw load of February 2020 dataset.
 -- Columns defined with maximum safe sizes (VARCHAR(255)) to avoid truncation
 -- since source file is large and field lengths were uncertain.
--- Will refine to exact limits in structured tables later.
+-- Exact limits will be refined in structured tables later.
 
 CREATE TABLE temp_feb_2020 (
     event_time DATETIME,
@@ -49,14 +51,15 @@ IGNORE 1 ROWS
 )
 SET
     event_time = STR_TO_DATE(@event_time_var, '%Y-%m-%d %H:%i:%s');
-/*
-events started at exactly 12 am, STR_TO_DATE was used to handle 0000-00-00 00:00:00 time
-*/
+
+-- events started at exactly 12 am, STR_TO_DATE was used to handle 0000-00-00 00:00:00 time
 
 -- ==========================================================
 -- Dropping incomplete column
 -- ==========================================================
--- Dropped column from all five temporary tables after inspection:
+-- Dropped the category_code column from all five temporary tables after inspection:
+-- Example shown below for February 2020; the same action
+-- was repeated for the other months.
 -- <1% populated, no reliable relationship to product_id or 
 -- category_id. Retaining would add noise without value.
 
@@ -67,6 +70,8 @@ DROP COLUMN category_code;
 -- Renaming event_type values for clarity
 -- ==========================================================
 -- Normalize event_type values to match controlled vocabulary used in analysis.
+-- Example shown below for February 2020; the same action
+-- was repeated for the other months.
 -- Raw values found in dataset: 'view', 'remove_from_cart', 'purchase'
 -- Converted to standardized labels: 'viewed', 'removed', 'purchased'
 -- Ensures consistency with ENUM definition in final structured table.
@@ -85,6 +90,8 @@ select event_type, count(event_type) from temp_feb_2020 group by event_type;
 -- ==========================================================
 -- Handling empty and null records
 -- ==========================================================
+-- Example shown below for February 2020; the same action
+-- was repeated for the other months.
 -- event_time: column checked, no missing values detected
 -- event_type: column checked, no missing values detected
 -- product_id: column checked, no missing values detected
@@ -97,7 +104,6 @@ SET brand = 'No Brand'
 WHERE brand IS NULL OR brand = '';
 
 -- User session: replace empty or NULL values with placeholder
--- NOTE: using 'unknown' may group unrelated events into one artificial session
 UPDATE temp_feb_2020
 SET session_id = 'unknown'
 WHERE session_id IS NULL OR session_id = '';
@@ -114,7 +120,7 @@ WHERE price IS NULL OR price = '';
 -- Create a master copy of the full dataset.
 -- This table will remain untouched and serve as the reference
 -- point for any subsets.
--- Reason: ensures we always have a clean rollback source even
+-- This ensures there is always a clean rollback source even
 -- if working tables are modified or truncated during analysis.
 -- NOTE: large table (20M+ rows). To improve insert performance,
 -- indexes (beyond the primary key) were added only after the
@@ -139,7 +145,7 @@ CREATE TABLE backup_events_history (
 -- ==========================================================
 -- Data was loaded from five monthly staging tables 
 -- (October 2019 through February 2020).
--- Example shown below for February 2020; the same structure 
+-- Example shown below for February 2020; the same action
 -- was repeated for the other months.
 INSERT IGNORE INTO backup_events_history (
     Event_time, Event_type, Category_id, Brand, Product_id, Price, User_id, session_id
@@ -151,7 +157,7 @@ FROM temp_feb_2020;
 -- ==========================================================
 -- Adding indexes (post-load)
 -- ==========================================================
--- Indexes were added only after the data load to prevent 
+-- Indexes were added after the data load to prevent 
 -- performance issues during bulk inserts.
 ALTER TABLE backup_events_history
   ADD INDEX event_type_idx (event_type),
@@ -193,9 +199,8 @@ ALTER TABLE events_history
 -- ==========================================================
 -- creating the price anomalies table
 -- ==========================================================
--- This table captures all events where the product price
--- was zero or negative. These records can be investigated
--- separately for data quality or business rule violations.
+-- This table captures all events where the product price was 
+--zero or negative. These records can be investigated separately.
 
 CREATE TABLE anomalies_price (
     Event_id BIGINT NOT NULL AUTO_INCREMENT,
@@ -221,8 +226,8 @@ FROM  backup_events_history where price <= 0;
 -- Creating the session history table
 -- ==========================================================
 -- This table summarizes user sessions by capturing start, end,
--- duration, and time attributes. Temporary staging is used to
--- compute session_start and session_end efficiently.
+-- duration, and time attributes. A temporary staging table is
+-- used to compute session_start and session_end efficiently.
 -- indexes were added after the data was loaded to improve
 -- performance
 
@@ -294,11 +299,11 @@ FROM session_history
 GROUP BY session_id
 HAVING COUNT(DISTINCT user_id) > 1;
 
--- Records with unknown sessions were also included, as
--- they will aggregate into one very large session which 
--- might bias analysis.
+-- Records with unknown sessions were also included then removed 
+-- from the working tables, as they will aggregate into one very
+-- large session which might skewer analysis.
 
--- Creating a table to store these anomalous session events  
+-- Creating a table to store anomalous session events  
 CREATE TABLE session_anomalies AS
 SELECT *
 FROM backup_events_history
@@ -358,7 +363,9 @@ SELECT
     SUM(CASE WHEN event_type = 'purchased' THEN 1 ELSE 0 END) AS purchased,
     SUM(CASE WHEN event_type = 'removed' THEN 1 ELSE 0 END) AS removed
 FROM events_history
-WHERE session_id > '1c74c67a-befd-4f57-a1a1-b3565c964ce5'  -- filter applied based on dataset check
+WHERE session_id > '1c74c67a-befd-4f57-a1a1-b3565c964ce5'
+	-- First insert was done without a filter, subsequent inserts
+	-- were filtered to continue from where the previous insert ended
 GROUP BY session_id
 ORDER BY session_id ASC
 LIMIT 500000;
